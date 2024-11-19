@@ -1,0 +1,5 @@
+[zonal_inputs]
+in_geom = "./sample_data/R5_all_HUC12s.zip"
+in_raster = "./sample_data/r5_slope.tif"
+stats = ['min', 'max', 'mean', 'count', 'std', 'median', 'nodata', 'percentile_25', 'percentile_75']
+outfile = "./sample_data/R5_HUC12_slope_zonal.shp"
