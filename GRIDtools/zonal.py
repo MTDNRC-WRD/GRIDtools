@@ -32,7 +32,7 @@ def calc_zonal_stats(in_geom, in_grid, **kwargs):
 
 def grid_area_weighted_volume(dataset, in_geom, out_fp, save_shp_to_file=False):
     """
-    Takes raster or multidimensional (.nc) datasets and input geometry in the same coordinate reference
+    Takes a multidimensional (.nc) dataset and input geometry in the same coordinate reference
     system and returns an area weighted volume from depth valued datasets (e.g., precip).
     :param dataset: an xarray dataset or dataarray instance, must have defined spatial_ref and be in units of meters,
     time dimension/coords must be labeled 'time'
