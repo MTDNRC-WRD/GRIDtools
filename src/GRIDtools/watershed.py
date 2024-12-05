@@ -5,6 +5,7 @@ Script to perform watershed delineation actions.
 """
 
 import pynhd
+from shapely.geometry import Point
 
 
 def delineate_watershed(coords):
