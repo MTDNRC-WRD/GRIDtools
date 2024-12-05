@@ -1,8 +1,8 @@
 from pathlib import Path
 import os
 
-from GRIDtools.zonal import calc_zonal_stats
-from GRIDtools.config import runconfig
+from src.GRIDtools import calc_zonal_stats
+from src.GRIDtools.config import runconfig
 
 config_fp = Path("./test/inputs.toml")
 config = runconfig(config_fp)
