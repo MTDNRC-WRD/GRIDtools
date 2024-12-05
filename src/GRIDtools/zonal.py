@@ -7,6 +7,7 @@ from rasterstats import zonal_stats
 import numpy as np
 import pandas as pd
 import xarray as xr
+from pathlib import Path
 
 
 def calc_zonal_stats(in_geom, in_grid, **kwargs):
