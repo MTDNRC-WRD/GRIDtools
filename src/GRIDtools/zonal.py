@@ -46,8 +46,6 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, save_shp_to_fi
     if (in_geom.geom_type != 'Polygon').any():
         raise ValueError("The input geometry(s) are not all type Polygon. Only Polygons are supported.")
 
-    # output path if grid shapefile is saved
-    out_file_path = Path(out_fp)
     # get grid resolution
     xres, yres = dataset.rio.resolution()
 
@@ -115,7 +113,10 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, save_shp_to_fi
 
     # export shapefile if desired
     if save_shp_to_file:
-        grid_shp.to_crs(4326).to_file(out_file_path / (dataset.name + '_clipped_grid.shp'))
+        if out_fp is None:
+            raise ValueError("Missing out_fp argument string.")
+        else:
+            grid_shp.to_crs(4326).to_file(Path(out_fp) / (dataset.name + '_clipped_grid.shp'))
 
     # Create xarray dataset of result
     agg_dset = xr.Dataset(
