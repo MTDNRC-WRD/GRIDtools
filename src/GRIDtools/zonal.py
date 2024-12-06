@@ -72,7 +72,7 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, save_shp_to_fi
     grd_proj = grid_polys.to_crs(5071)
 
     # get in shape areas in Km^2
-    ingeom_areas = r_proj.area.values / (1000 ** 2)
+    ingeom_areas = g_proj.area.values / (1000 ** 2)
 
     intersection_geoms = []
     in_shape_id = []
@@ -117,7 +117,7 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, save_shp_to_fi
         if out_fp is None:
             raise ValueError("Missing out_fp argument string.")
         else:
-            grid_shp.to_crs(4326).to_file(Path(out_fp) / (dataset.name + '_clipped_grid.shp'))
+            clipped_grid_shp.to_crs(4326).to_file(Path(out_fp) / (dataset.name + '_clipped_grid.shp'))
 
     # Create xarray dataset of result
     agg_dset = xr.Dataset(
