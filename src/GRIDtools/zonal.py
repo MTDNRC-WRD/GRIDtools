@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from pathlib import Path
+from shapely.geometry import Polygon
 
 
 def calc_zonal_stats(in_geom, in_grid, **kwargs):
