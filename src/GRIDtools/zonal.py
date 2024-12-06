@@ -102,10 +102,10 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, save_shp_to_fi
     # Loop through unique feature ID's calculate the weighted volume for each
     vol_series = []
     for gid in in_geom[geom_id_col].to_list():
-        qarea = pd.DataFrame(clipped_grid_shp.loc[clipped_grid_shp['FeatureID'] == gid]['CellArea_sqKm'],
+        qarea = pd.DataFrame(clipped_grid_shp.loc[clipped_grid_shp['FeatureID'] == gid]['CellArea_sqm'],
                              index=clipped_grid_shp.loc[clipped_grid_shp['FeatureID'] == gid].index)
         allcells = pd.concat([qarea, grid_polys], axis=1)
-        area_arry = allcells['CellArea_sqKm'].values.reshape(nrows, ncols)
+        area_arry = allcells['CellArea_sqm'].values.reshape(nrows, ncols)
         md_arry = dataset.values
         vol_grd = area_arry * md_arry
         vol_v = np.nansum(vol_grd, axis=(1, 2))
