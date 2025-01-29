@@ -3,37 +3,53 @@
 
 import geopandas as gpd
 import rasterio as rio
-from rasterstats import zonal_stats
 import numpy as np
 import pandas as pd
 import xarray as xr
 from pathlib import Path
 from shapely.geometry import Polygon
 
+from utils import vectorize_grid, RasterClass
 
-def calc_zonal_stats(in_geom, in_grid, **kwargs):
+
+def calc_zonal_stats(in_geom, in_grid, method='groupby', **kwargs):
+    """
+    Uses various methods to calculate zonal statistics for set of geometries. This method rasterizes the geometries
+    to calculate zonal statistics.
+
+    Args:
+        in_geom:
+        in_grid:
+        **kwargs:
+
+    Returns:
+        GeoDataFrame:
+    """
     # get geometry in same reference system
-    geom = gpd.read_file(in_geom)
-    with rio.open(in_grid) as src:
-        affine = src.transform
-        array = src.read(1)
-        crs = src.crs
-        nodata = src.nodata
-    array[array == nodata] = np.nan
+    if isinstance(in_geom, (str, Path)):
+        in_geom = gpd.read_file(in_geom)
+
+    geom = in_geom
+    raster = RasterClass(in_grid)
 
     # check crs
-    if geom.crs.to_authority() == crs.to_authority():
+    if geom.crs.to_authority() == raster.crs.to_authority():
         pass
     else:
-        geom = geom.to_crs(crs)
+        geom = geom.to_crs(raster.crs)
 
-    zs = zonal_stats(geom.geometry, array, affine=affine, **kwargs)
-    fgd = geom.join(pd.DataFrame(zs))
+    if method == 'rasterstats':
+        from rasterstats import zonal_stats
+
+        # Need to add loop to deal with multiple bands
+        zs = zonal_stats(geom.geometry, raster.values, affine=raster.transform, **kwargs)
+        fgd = geom.join(pd.DataFrame(zs))
+    elif method == 'groupby':
 
     # return GeoDataFrame with stats added as additional attributes
     return fgd
 
-def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, save_shp_to_file=False, out_fp=None):
+def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, data_scale=1):
     """
     Takes a multidimensional (.nc) DataArray and input polygon geometry in the same coordinate reference
     system and returns an area weighted volume for depth valued variables (e.g., precip).
@@ -47,26 +63,11 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, save_shp_to_fi
     if (in_geom.geom_type != 'Polygon').any():
         raise ValueError("The input geometry(s) are not all type Polygon. Only Polygons are supported.")
 
-    # get grid resolution
-    xres, yres = dataset.rio.resolution()
-
-    # get the array bounds as variables for new geometry
-    gminx, gminy, gmaxx, gmaxy = dataset.rio.bounds()
-
-    # shape of dataset
-    nrows = dataset.shape[1]
-    ncols = dataset.shape[2]
-
-    nshp_cols = list(np.linspace(gminx, gmaxx, ncols+1))
-    nshp_rows = np.linspace(gminy, gmaxy, nrows+1)
-    nshp_rows = np.flip(nshp_rows)
-
-    grid_polygons = []
-    for y in nshp_rows[:-1]:
-        for x in nshp_cols[:-1]:
-            grid_polygons.append(Polygon([(x,y), (x+xres,y), (x+xres, y+yres), (x, y+yres)]))
-
-    grid_polys = gpd.GeoDataFrame(geometry=grid_polygons, crs=4326)
+    rast = RasterClass(dataset)
+    grid_polys = vectorize_grid(dataset)
+    grid_polys.index.name = 'GridID'
+    nrows = rast.values.shape[1]
+    ncols = rast.values.shape[2]
 
     g_proj = in_geom.to_crs(5071)
     grd_proj = grid_polys.to_crs(5071)
@@ -74,50 +75,38 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, save_shp_to_fi
     # get in shape areas in Km^2
     ingeom_areas = g_proj.area.values / (1000 ** 2)
 
-    intersection_geoms = []
-    in_shape_id = []
-    grid_cell_id = []
-    for i, g1 in enumerate(g_proj.geometry.values):
-        for j, g2 in enumerate(grd_proj.geometry.values):
-            if g1.intersects(g2):
-                igeom = g1.intersection(g2)
-                intersection_geoms.append(igeom)
-                if geom_id_col is None:
-                    in_shape_id.append(i)
-                elif geom_id_col in in_geom.columns.to_list():
-                    in_shape_id.append(in_geom[geom_id_col].iloc[i])
-                else:
-                    raise ValueError("Argument for geom_id_col not found in input geometry columns.")
-                grid_cell_id.append(j)
+    clips = []
+    for r in range(len(g_proj.index)):
+        clpd = gpd.clip(grd_proj, g_proj.loc[[r]], sort=True)
 
-    clipped_grid_shp = gpd.GeoDataFrame({
-        "GridID": grid_cell_id,
-        "FeatureID": in_shape_id
-    },
-        geometry=intersection_geoms,
-        crs=5071,
-    )
+        if geom_id_col is None:
+            clpd['FeatureID'] = r
+        elif geom_id_col in in_geom.columns.to_list():
+            clpd['FeatureID'] = in_geom.loc[r][geom_id_col]
+        else:
+            raise ValueError("Argument for geom_id_col not found in input geometry columns.")
+
+        clips.append(clpd)
+
+    clipped_grid_shp = pd.concat(clips)
     clipped_grid_shp['CellArea_sqm'] = clipped_grid_shp.geometry.area
+    clipped_grid_shp.index.name = 'GridID'
 
     # Loop through unique feature ID's calculate the weighted volume for each
     vol_series = []
     for gid in in_geom[geom_id_col].to_list():
-        qarea = pd.DataFrame(clipped_grid_shp.loc[clipped_grid_shp['FeatureID'] == gid]['CellArea_sqm'],
-                             index=clipped_grid_shp.loc[clipped_grid_shp['FeatureID'] == gid].index)
-        allcells = pd.concat([qarea, grid_polys], axis=1)
+        qarea = pd.DataFrame(
+            {'CellArea_sqm': clipped_grid_shp.loc[clipped_grid_shp['FeatureID'] == gid]['CellArea_sqm'].values},
+            index=clipped_grid_shp.loc[clipped_grid_shp['FeatureID'] == gid].index
+        )
+        allcells = pd.concat([qarea, grd_proj], axis=1)
+        allcells.sort_index(inplace=True)
         area_arry = allcells['CellArea_sqm'].values.reshape(nrows, ncols)
-        md_arry = dataset.values
+        md_arry = dataset.values / data_scale
         vol_grd = area_arry * md_arry
         vol_v = np.nansum(vol_grd, axis=(1, 2))
         vol_v = vol_v.reshape(vol_v.size, 1)
         vol_series.append(vol_v)
-
-    # export shapefile if desired
-    if save_shp_to_file:
-        if out_fp is None:
-            raise ValueError("Missing out_fp argument string.")
-        else:
-            clipped_grid_shp.to_crs(4326).to_file(Path(out_fp) / (dataset.name + '_clipped_grid.shp'))
 
     # Create xarray dataset of result
     agg_dset = xr.Dataset(
