@@ -9,6 +9,7 @@ import xarray as xr
 import rioxarray
 from pathlib import Path
 from shapely.geometry import Polygon
+from shapely.affinity import translate
 
 
 class RasterClass:
@@ -17,9 +18,27 @@ class RasterClass:
     loader, and xarray.
 
     Attributes:
-
+        values(numpy.array) : value array of the raster
+        crs(str) : wkt string of the coordinate reference system
+        transform(affine.Affine) : Affine transform for the raster dataset
+        bounds(tuple) : the dataset bounds (xmin, ymin, xmax, ymax)
+        resolution(tuple) : the pixel resolution of the dataset (x_pixel_width, y_pixel_height)
+        band_idx(numpy.array): the index labels or values for the bands of the raster (only for xarray objects)
+        dim_names(list): the names of the dataset dimensions (only for xarray objects)
     """
     def __init__(self, ds):
+        """
+        Initialization function for RasterClass that generalizes multiple sources of raster input data to a set of
+        common attributes.
+
+        Args:
+            ds(str | Path | rasterio.DatasetReader | xarray.DataArray | xarray.Dataset): input raster or
+            multidimensional gridded dataset. Must have valid CRS and attributes collable by rioxarray if it is an
+            xarray object.
+        """
+        self.band_idx = None
+        self.dim_names = None
+
         if isinstance(ds, (str, Path)):
 
             if isinstance(ds, str):
@@ -47,7 +66,7 @@ class RasterClass:
                 else:
                     self.values = ds.values
                 self.crs = ds.rio.crs
-                self.transform = ds.rio.transform
+                self.transform = ds.rio.transform()
                 self.bounds = ds.rio.bounds()
                 self.resolution = ds.rio.resolution()
 
@@ -71,11 +90,21 @@ class RasterClass:
             else:
                 self.values = ds.values
             self.crs = ds.rio.crs
-            self.transform = ds.rio.transform
+            self.transform = ds.rio.transform()
             self.bounds = ds.rio.bounds()
             self.resolution = ds.rio.resolution()
+            self.dim_names = self._get_xarray_dim_names(ds)
+            self.band_idx = ds[self.dim_names[0]].values
         else:
             raise ValueError("The input is not recognized as a file path, rasterio DatasetReader, or xarray object.")
+
+    def _get_xarray_dim_names(self, ds):
+        dimnames = []
+        for x in self.values.shape:
+            dimname = next((name for name, size in dict(ds.sizes).items() if size == x), None)
+            dimnames.append(dimname)
+
+        return dimnames
 
 
 def vectorize_grid(dataset):
@@ -115,4 +144,63 @@ def vectorize_grid(dataset):
     return grid_polys
 
 
+def jitter_geometries(pnt_gdframe, tolerance=0.1):
+    """
+    Function that applies "jitter" or random noise to geometries in a Geopandas GeoDataFrame.
 
+    Args:
+        pnt_gdframe(geopandas.GeoDataFrame): A GeoDataFrame with valid geometry column.
+        tolerance(float): The spread of the random noise added (interpreted as the standard-deviation).
+
+    Returns:
+        geopandas.GeoDataFrame: GeoDataFrame with "jittered" geometries
+    """
+    gdf = pnt_gdframe
+
+    gdf.loc[:,'geometry'] = gdf['geometry'].apply(lambda point: translate(
+        point,
+        np.random.normal(0, tolerance / 2),
+        np.random.normal(0, tolerance / 2)
+    ))
+
+    return gdf
+
+
+def find_intersections(gdf: gpd.GeoDataFrame):
+    """
+    Function to find any intersecting geometries in a GeoDataFrame.
+
+    Args:
+        gdf(geopandas.GeoDataFrame): Input GeoDataFrame to assess intersections.
+
+    Returns:
+        geopandas.GeoDataFrame: Output GeoDataFrame
+    """
+    # Save geometries to another field
+    gdf.loc[:,'geom'] = gdf.geometry
+
+    # Self join
+    sj = gpd.sjoin(gdf, gdf,
+                   how="inner",
+                   predicate="intersects",
+                   lsuffix="left",
+                   rsuffix="right")
+
+    # Remove geometries that intersect themselves
+    sj = sj[sj.index != sj.index_right]
+
+    # Extract the intersecting geometry
+    sj['intersection_geom'] = sj['geom_left'].intersection(sj['geom_right'])
+
+    geom_name = sj.active_geometry_name
+    # Reset the geometry (remember to set the CRS correctly!)
+    sj = sj.set_geometry('intersection_geom', crs=gdf.crs)
+
+    # Drop duplicate geometries
+    final_gdf = sj.drop_duplicates(subset=['geometry']).reset_index()
+
+    # Drop intermediate fields
+    drops = ['geom_left', 'geom_right', 'index_right', 'index']
+    final_gdf = final_gdf.drop(drops, axis=1)
+
+    return final_gdf
