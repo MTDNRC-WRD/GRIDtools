@@ -12,7 +12,7 @@ from rasterio.transform import rowcol
 from shapely.geometry import Polygon
 import warnings
 
-from utils import vectorize_grid, RasterClass
+from GRIDtools.utils import vectorize_grid, RasterClass
 
 
 def calc_zonal_stats(in_geom,

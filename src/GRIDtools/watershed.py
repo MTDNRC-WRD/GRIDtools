@@ -9,7 +9,7 @@ import pandas as pd
 from shapely.geometry import Point
 from pynhd.exceptions import ServiceError
 
-from utils import jitter_geometries
+from GRIDtools.utils import jitter_geometries
 
 def delineate_watershed(in_coords):
     """
