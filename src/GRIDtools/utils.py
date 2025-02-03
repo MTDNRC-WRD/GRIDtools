@@ -36,8 +36,9 @@ class RasterClass:
             multidimensional gridded dataset. Must have valid CRS and attributes collable by rioxarray if it is an
             xarray object.
         """
-        self.band_idx = None
+        self.band_idx_labels = None
         self.dim_names = None
+        self.variables = 'Value'
 
         if isinstance(ds, (str, Path)):
 
@@ -47,7 +48,7 @@ class RasterClass:
             if ds.suffix == '.tif':
                 ds = rio.open(ds)
 
-                self.values = ds.read()
+                self.values = np.stack([ds.read()], axis=0)
                 self.crs = ds.crs
                 self.transform = ds.transform
                 self.bounds = (ds.bounds.left,
@@ -60,21 +61,25 @@ class RasterClass:
             elif ds.suffix == '.nc':
                 ds = xr.open_dataset(ds)
 
-                # if there are multiple variables this selects the first for getting grid properties
                 if isinstance(ds, xr.Dataset):
-                    self.values = ds[list(ds.data_vars)[0]].values
+                    self.variables = list(ds.data_vars)
+                    self.values = np.stack([ds[var] for var in list(ds.data_vars)], axis=0)
+                elif isinstance(ds, xr.DataArray):
+                    self.variables = ds.name
+                    self.values = np.stack([ds.values], axis=0)
                 else:
-                    self.values = ds.values
+                    raise ValueError("Datatype not recognized, check input file or object.")
                 self.crs = ds.rio.crs
                 self.transform = ds.rio.transform()
                 self.bounds = ds.rio.bounds()
                 self.resolution = ds.rio.resolution()
-
+                self.dim_names = self._get_xarray_dim_names(ds)
+                self.band_idx_labels = ds[self.dim_names[0]].values
             else:
                 raise ValueError("File type not recognized. Currently only .tif and .nc are supported.")
 
         elif isinstance(ds, rio.DatasetReader):
-            self.values = ds.read()
+            self.values = np.stack([ds.read()], axis=0)
             self.crs = ds.crs
             self.transform = ds.transform
             self.bounds = (ds.bounds.left,
@@ -86,21 +91,25 @@ class RasterClass:
 
         elif isinstance(ds, (xr.DataArray, xr.Dataset)):
             if isinstance(ds, xr.Dataset):
-                self.values = ds[list(ds.data_vars)[0]].values
+                self.variables = list(ds.data_vars)
+                self.values = np.stack([ds[var] for var in self.variables], axis=0)
+            elif isinstance(ds, xr.DataArray):
+                self.variables = ds.name
+                self.values = np.stack([ds.values], axis=0)
             else:
-                self.values = ds.values
+                raise ValueError("Datatype not recognized, check input file or object.")
             self.crs = ds.rio.crs
             self.transform = ds.rio.transform()
             self.bounds = ds.rio.bounds()
             self.resolution = ds.rio.resolution()
             self.dim_names = self._get_xarray_dim_names(ds)
-            self.band_idx = ds[self.dim_names[0]].values
+            self.band_idx_labels = ds[self.dim_names[0]].values
         else:
             raise ValueError("The input is not recognized as a file path, rasterio DatasetReader, or xarray object.")
 
     def _get_xarray_dim_names(self, ds):
         dimnames = []
-        for x in self.values.shape:
+        for x in self.values[0,:,:,:].shape:
             dimname = next((name for name, size in dict(ds.sizes).items() if size == x), None)
             dimnames.append(dimname)
 
@@ -127,8 +136,8 @@ def vectorize_grid(dataset):
     gminx, gminy, gmaxx, gmaxy = raster.bounds
 
     # shape of dataset
-    nrows = raster.values.shape[1]
-    ncols = raster.values.shape[2]
+    nrows = raster.values.shape[2]
+    ncols = raster.values.shape[3]
 
     nshp_cols = list(np.linspace(gminx, gmaxx, ncols + 1))
     nshp_rows = np.linspace(gminy, gmaxy, nrows + 1)

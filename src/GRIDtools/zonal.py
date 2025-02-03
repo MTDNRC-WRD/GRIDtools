@@ -52,7 +52,8 @@ def calc_zonal_stats(in_geom,
             each geometry (False) - default is False
 
         output (str): optional
-            Specifies what type to return, either 'pandas' for pandas.DataFrame or 'xarray' for xarray.Dataset
+            Specifies what type to return, either 'pandas' for pandas.DataFrame or 'xarray' for xarray.Dataset.
+            This is ignored if method == 'rasterstats' which will always output a pandas dataframe.
 
         **kwargs:
             additional key word arguments accepted by rasterstats package
@@ -118,7 +119,7 @@ def calc_zonal_stats(in_geom,
 
         # Need to add loop to deal with multiple bands
         zs = zonal_stats(geom.geometry,
-                         raster.values,
+                         raster.values[0,0,:,:],
                          affine=raster.transform,
                          stats=stats,
                          all_touched=all_touched,
@@ -138,29 +139,48 @@ def calc_zonal_stats(in_geom,
         fgd = geom.join(pd.DataFrame(zs))
 
     elif method == 'groupby':
-        def rasterized_to_df(rasterized_features, in_raster_values, band_idx, stats):
+        def rasterized_to_df(rasterized_features,
+                             in_raster_values,
+                             band_idx,
+                             band_name,
+                             var_names,
+                             stats):
             adj_rzd = rasterized_features - 1
+            df_dict = {'FID': np.tile(adj_rzd.ravel(), band_idx.size), band_name: band_idx.repeat(adj_rzd.ravel().size)}
+
+            if isinstance(var_names, str):
+                df_dict[var_names] = in_raster_values[0,:,:,:].ravel()
+            else:
+                for i in range(len(var_names)):
+                    df_dict[var_names[i]] = in_raster_values[i,:,:,:].ravel()
+
             rstrzd_df = pd.DataFrame(
-                {'FID': np.tile(adj_rzd.ravel(), band_idx.size), 'Band': band_idx.repeat(adj_rzd.ravel().size),
-                 'Value': in_raster_values.ravel()})
+                df_dict
+            )
+
             filtered_df = rstrzd_df.loc[rstrzd_df.FID != -1, :]
-            grouped = filtered_df.groupby(['FID', 'Band']).agg({'Value': stats})
+            grouped = filtered_df.groupby(['FID', band_name]).agg(stats)
             Fstck = grouped.stack(level=1, future_stack=True)
             new_names = list(Fstck.index.names)[0:2] + ['stat']
             ret_df = Fstck.rename_axis(index=new_names)
 
             return ret_df
 
-        bands = raster.values.shape[0]
-        if raster.band_idx is None:
-            band_idx = np.arange(1, bands + 1)
+        bands = raster.values.shape[1]
+        if raster.band_idx_labels is None:
+            band_idx_labels = np.arange(1, bands + 1)
         else:
-            band_idx = raster.band_idx
+            band_idx_labels = raster.band_idx_labels
+
+        if raster.dim_names is None:
+            band_nm = 'Band'
+        else:
+            band_nm = raster.dim_names[0]
 
         geom_value = ((geom, value) for geom, value in zip(geom.geometry, geom.index + 1))
         rasterized = rasterize(
             geom_value,
-            out_shape=(raster.values.shape[1], raster.values.shape[2]),
+            out_shape=(raster.values.shape[2], raster.values.shape[3]),
             fill=0,
             transform=raster.transform,
             all_touched=all_touched,
@@ -168,7 +188,12 @@ def calc_zonal_stats(in_geom,
             merge_alg=MergeAlg.replace
         )
 
-        result_df = rasterized_to_df(rasterized, raster.values, band_idx, stats)
+        result_df = rasterized_to_df(rasterized,
+                                     raster.values,
+                                     band_idx_labels,
+                                     band_nm,
+                                     raster.variables,
+                                     stats)
 
         n_rstrzed = np.unique(rasterized)
         gids = n_rstrzed[1:] - 1
@@ -189,7 +214,7 @@ def calc_zonal_stats(in_geom,
             geom_value = ((geom, value) for geom, value in zip(missed_polys.geometry, missed_polys.index + 1))
             m_rasterized = rasterize(
                 geom_value,
-                out_shape=(raster.values.shape[1], raster.values.shape[2]),
+                out_shape=(raster.values.shape[2], raster.values.shape[3]),
                 fill=0,
                 transform=raster.transform,
                 all_touched=all_touched,
@@ -197,7 +222,12 @@ def calc_zonal_stats(in_geom,
                 merge_alg=MergeAlg.replace
             )
 
-            m_result_df = rasterized_to_df(m_rasterized, raster.values, band_idx, stats)
+            m_result_df = rasterized_to_df(m_rasterized,
+                                           raster.values,
+                                           band_idx_labels,
+                                           band_nm,
+                                           raster.variables,
+                                           stats)
             result_df = pd.concat([result_df, m_result_df])
 
             n_rstrzed = result_df.index.get_level_values(0).unique()
@@ -205,12 +235,13 @@ def calc_zonal_stats(in_geom,
                 print(
                     "Second attempt did not return all geometries, defaulting to point locations for remaining geometries.")
 
+                ## Indexing problem here, fix by finishing point sampler function and then just call that
+                #       instead of imbedding separate code here.
                 missed_polys = geom.loc[~geom.index.isin(n_rstrzed), :]
                 cntrs = missed_polys.centroid
-                rowcol_ids = rowcol(raster.transform, cntrs.x.to_list(), cntrs.y.to_list())
-                point_values = raster.values[:, rowcol_ids[0], rowcol_ids[1]]
-                point_rasterized = missed_polys.index.values
-                pnt_df = rasterized_to_df(point_rasterized + 1, point_values, band_idx, stats)
+                pnt_df = sample_raster_points(cntrs.x, cntrs.y, raster, pnt_index=missed_polys.index.values, output='pandas_long')
+                pnt_df['stat'] = 'single_point'
+                pnt_df = pnt_df.set_index(['FID', band_nm, 'stat']).sort_index(level=['FID', band_nm])
 
                 result_df = pd.concat([result_df, pnt_df])
 
@@ -227,7 +258,14 @@ def calc_zonal_stats(in_geom,
                 stacklevel=2
             )
 
-        fgd = result_df.sort_index(level=['FID', 'Band'])
+        fgd = result_df.sort_index(level=['FID', band_nm])
+
+        if output == 'pandas':
+            pass
+        elif output == 'xarray':
+            fgd = fgd.to_xarray()
+        else:
+            raise ValueError("The output argument is not recognized, choose between 'pandas or 'xarray.'")
 
     else:
         raise ValueError("The method argument is not recognized, please choose 'rasterstats' or 'groupby.'")
@@ -252,8 +290,8 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, data_scale=1):
     rast = RasterClass(dataset)
     grid_polys = vectorize_grid(dataset)
     grid_polys.index.name = 'GridID'
-    nrows = rast.values.shape[1]
-    ncols = rast.values.shape[2]
+    nrows = rast.values.shape[2]
+    ncols = rast.values.shape[3]
 
     g_proj = in_geom.to_crs(5071)
     grd_proj = grid_polys.to_crs(5071)
@@ -288,7 +326,7 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, data_scale=1):
         allcells = pd.concat([qarea, grd_proj], axis=1)
         allcells.sort_index(inplace=True)
         area_arry = allcells['CellArea_sqm'].values.reshape(nrows, ncols)
-        md_arry = dataset.values / data_scale
+        md_arry = rast.values[0,:,:,:] / data_scale
         vol_grd = area_arry * md_arry
         vol_v = np.nansum(vol_grd, axis=(1, 2))
         vol_v = vol_v.reshape(vol_v.size, 1)
@@ -315,3 +353,85 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, data_scale=1):
     )
 
     return agg_dset
+
+
+def sample_raster_points(xcoords, ycoords, in_grid, pnt_index=None, output='pandas_long'):
+    """
+    Function takes a list of x and y coordinates and returns a dataframe or dataset of values sampled from a raster
+    input dataset.This function returns values across all dimensions of a multidimensional raster. This function does
+    not check for matching coordinate reference systems so points must be in the same CRS as the input raster.
+
+    Args:
+        xcoords(list | numpy.ndarray):
+            list or 1D-array of x coordinates.
+
+        ycoords(list | numpy.ndarray):
+            list or 1D-array of y coordinates.
+
+        in_grid(str | Path | RasterClass | rasterio.DatasetReader | xarray.DataArray | xarray.Dataset):
+            The input gridded dataset to sample from.
+
+        pnt_index(list | numpy.ndarray): optional
+            An input list or 1D-array of index labels to override the default incremental index.
+
+        output(str): optional
+            The type of output to return as a string:
+                - 'pandas_long' is a long-form dataframe returned (default)
+                - 'pandas_multi' is a multiindex dataframe
+                - 'xarray' returns an xarray dataset
+
+    Returns:
+        pandas.DataFrame | xarray.Dataset:
+            Returns a Dataframe or Dataset of the raster values at the input coordinate locations, indexed by
+            the input index.
+    """
+    if isinstance(in_grid, RasterClass):
+        raster = in_grid
+    else:
+        raster = RasterClass(in_grid)
+
+    bands = raster.values.shape[1]
+    if raster.band_idx_labels is None:
+        band_idx_labels = np.arange(1, bands + 1)
+    else:
+        band_idx_labels = raster.band_idx_labels
+
+    if raster.dim_names is None:
+        band_nm = 'Band'
+    else:
+        band_nm = raster.dim_names[0]
+
+    if pnt_index is None:
+        pnt_index = np.arange(0, len(xcoords))
+    elif isinstance(pnt_index, (list, np.ndarray)):
+        pass
+    else:
+        raise ValueError("The input point indexes are not recognized as list-like or 1D numpy array.")
+
+    rowcol_ids = rowcol(raster.transform, xcoords, ycoords)
+    point_values = raster.values[:, :, rowcol_ids[0], rowcol_ids[1]]
+    df_dict = {'FID': np.tile(pnt_index, band_idx_labels.size), band_nm: band_idx_labels.repeat(len(pnt_index))}
+
+    if isinstance(raster.variables, str):
+        df_dict[raster.variables] = point_values[0, :, :].ravel()
+    else:
+        for i in range(len(raster.variables)):
+            df_dict[raster.variables[i]] = point_values[i, :, :].ravel()
+
+    # Needs to be structured as multiindex dframe with band and variables such that we are sampling
+    #   across all dimensions
+    out = pd.DataFrame(
+        df_dict
+    )
+
+    if output == 'pandas_long':
+        return out
+    elif output == 'pandas_multi':
+        out = out.set_index(['FID', band_nm]).sort_index()
+        return out
+    elif output == 'xarray':
+        out = out.set_index(['FID', band_nm]).sort_index()
+        out = out.to_xarray()
+        return out
+    else:
+        raise ValueError("The output argument is not recognized. Please choose 'pandas_long', 'pandas_multi', or 'xarray.'")
