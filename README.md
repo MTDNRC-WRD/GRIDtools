@@ -8,3 +8,7 @@ pip install https://github.com/MTDNRC-WRD/GRIDtools/archive/refs/heads/main.zip
 pip install https://https://github.com/MTDNRC-WRD/GRIDtools/archive/refs/tags/*version_number*.zip
 
 Insert the version number you want to download for example v0.2.0
+### Development (editable) Install
+fork and clone the repo
+
+pip install -e //path/to/clone/GRIDtools
