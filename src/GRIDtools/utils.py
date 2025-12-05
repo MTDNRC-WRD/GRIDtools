@@ -1,5 +1,16 @@
-## utility functions for use in other GRIDtools methods
-# CNB968 - Todd Blythe
+"""Utility classes and functions used by the GRIDtools package.
+
+This module contains the following classes:
+- RasterClass
+This module contains the following functions:
+- vectorize_grid()
+- find_intersections()
+
+-  **Author(s):** Todd Blythe, MTDNRC, CNB968
+-  **Date:** Created 12/1/2025
+"""
+from pathlib import Path
+from typing import Union, Optional
 
 import geopandas as gpd
 import rasterio as rio
@@ -7,39 +18,99 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import rioxarray
-from pathlib import Path
 from shapely.geometry import Polygon
-from shapely.affinity import translate
+from affine import Affine
 
 
 class RasterClass:
-    """
-    This is a class for generalizing raster inputs from multiple input sources/types such as from file, rasterio
-    loader, and xarray.
+    """Container for raster datasets.
+
+    Generalizes raster or gridded data by representing it as a standard set of attributes that can be transformed,
+    edited, and/or recreated for various end uses. Can be initialized directly by dataset metadata or loaded from
+    multiple input sources/types such as from file, rasterio loader, or xarray objects.
 
     Attributes:
-        values(numpy.array) : value array of the raster
-        crs(str) : wkt string of the coordinate reference system
-        transform(affine.Affine) : Affine transform for the raster dataset
-        bounds(tuple) : the dataset bounds (xmin, ymin, xmax, ymax)
-        resolution(tuple) : the pixel resolution of the dataset (x_pixel_width, y_pixel_height)
-        band_idx(numpy.array): the index labels or values for the bands of the raster (only for xarray objects)
-        dim_names(list): the names of the dataset dimensions (only for xarray objects)
+        values:
+            A numpy ndarray of raster values
+        crs:
+            A rasterio CRS object or WKT string of the coordinate reference system
+        transform:
+            An affine.Affine object representing the Affine transform for the raster dataset
+        bounds:
+            Tuple of dataset bounds (xmin, ymin, xmax, ymax)
+        resolution:
+            Tuple containing the pixel resolution of the dataset (x_pixel_width, y_pixel_height)
+        band_idx_labels:
+            A numpy ndarray of the index labels or values for the bands of the raster (only valid for xarray objects)
+        dim_names:
+            A list containing the names of the dataset dimensions (only valid for xarray objects)
+        variables:
+            A string or list of strings representing the variable(s) in the raster dataset
     """
-    def __init__(self, ds):
+    def __init__(self,
+                 data: np.ndarray,
+                 crs: rio.crs.CRS,
+                 transform: Affine,
+                 bounds: tuple,
+                 resolution: tuple,
+                 var_names: Optional[Union[str, list]] = None,
+                 band_labels: Optional[Union[list, np.ndarray]] = None,
+                 dim_names: Optional[Union[list, np.ndarray]] = None,
+                 ):
         """
-        Initialization function for RasterClass that generalizes multiple sources of raster input data to a set of
-        common attributes.
+        Initializes the instance based on direct raster metadata input.
 
         Args:
-            ds(str | Path | rasterio.DatasetReader | xarray.DataArray | xarray.Dataset): input raster or
-            multidimensional gridded dataset. Must have valid CRS and attributes collable by rioxarray if it is an
-            xarray object.
-        """
-        self.band_idx_labels = None
-        self.dim_names = None
-        self.variables = 'Value'
+            data:
+                Defines the data array associated with the instance.
+            crs:
+                Defines instance coordinate reference information.
+            transform:
+                Defines affine transform for the instance.
+            bounds:
+                Defines the instance geospatial grid bounds.
+            resolution:
+                Defines the instance's x- and y- resolution or grid distance of each cell.
+            var_names:
+                The variable names of the instance
 
+                This relates to the axis=0 dimension of the instance data array.
+            band_labels:
+                Labels for the 3rd dimension of the instance (the bands of the raster).
+
+                Relates to the axis=1 dimension of the data array.
+            dim_names:
+                The names of the instance dimensions.
+
+                These are equivalent to the labels for the various axes of the data array.
+        """
+        # TODO: should have each of these as properties with setter methods...this would allow more error checking and
+        #   make sure inputs conform to the required format.
+        if len(data.shape) < 3:
+            self.values = np.stack([data], axis=0)
+        else:
+            self.values = data
+        self.crs = crs
+        self.transform = transform
+        self.bounds = bounds
+        self.resolution = resolution
+        self.band_idx_labels = band_labels
+        self.dim_names = dim_names
+        if var_names is None:
+            self.variables = 'Value'
+        else:
+            self.variables = var_names
+
+    @staticmethod
+    def load(ds: Union[str, Path, rio.DatasetReader, xr.DataArray, xr.Dataset]):
+        """A loader function to create an instance from file or separate raster-like object.
+
+        Args:
+            ds: The input raster dataset as a file-path, rasterio, or xarray object.
+
+        Returns:
+            An instance of the class, a RasterClass object.
+        """
         if isinstance(ds, (str, Path)):
 
             if isinstance(ds, str):
@@ -48,86 +119,110 @@ class RasterClass:
             if ds.suffix == '.tif':
                 ds = rio.open(ds)
 
-                self.values = np.stack([ds.read()], axis=0)
-                self.crs = ds.crs
-                self.transform = ds.transform
-                self.bounds = (ds.bounds.left,
-                               ds.bounds.bottom,
-                               ds.bounds.right,
-                               ds.bounds.top)
-                self.resolution = ds.res
+                values = np.stack([ds.read()], axis=0)
+                crs = ds.crs
+                transform = ds.transform
+                bounds = (ds.bounds.left,
+                          ds.bounds.bottom,
+                          ds.bounds.right,
+                          ds.bounds.top)
+                resolution = ds.res
                 ds.close()
+                variables = None
+                band_idx_labels = None
+                dim_names = None
 
             elif ds.suffix == '.nc':
                 ds = xr.open_dataset(ds)
 
                 if isinstance(ds, xr.Dataset):
-                    self.variables = list(ds.data_vars)
-                    self.values = np.stack([ds[var] for var in list(ds.data_vars)], axis=0)
+                    variables = list(ds.data_vars)
+                    values = np.stack([ds[var] for var in list(ds.data_vars)], axis=0)
+                    vdim_list = [ds[v].dims for v in list(ds.data_vars)]
+                    dim_names = vdim_list[0]
+                    if not all(element == dim_names for element in vdim_list):
+                        raise ValueError("The dimensions of data variables in the dataset are not all the same. "
+                                         "Datasets with multiple variables are only allowed if all variable dimensions "
+                                         "are equal.")
+                    dim_names = list(dim_names)
                 elif isinstance(ds, xr.DataArray):
-                    self.variables = ds.name
-                    self.values = np.stack([ds.values], axis=0)
+                    variables = ds.name
+                    values = np.stack([ds.values], axis=0)
+                    dim_names = list(ds.dims)
                 else:
                     raise ValueError("Datatype not recognized, check input file or object.")
-                self.crs = ds.rio.crs
-                self.transform = ds.rio.transform()
-                self.bounds = ds.rio.bounds()
-                self.resolution = ds.rio.resolution()
-                self.dim_names = self._get_xarray_dim_names(ds)
-                self.band_idx_labels = ds[self.dim_names[0]].values
+                crs = ds.rio.crs
+                transform = ds.rio.transform()
+                bounds = ds.rio.bounds()
+                resolution = ds.rio.resolution()
+                band_idx_labels = ds[dim_names[0]].values
             else:
                 raise ValueError("File type not recognized. Currently only .tif and .nc are supported.")
 
         elif isinstance(ds, rio.DatasetReader):
-            self.values = np.stack([ds.read()], axis=0)
-            self.crs = ds.crs
-            self.transform = ds.transform
-            self.bounds = (ds.bounds.left,
-                           ds.bounds.bottom,
-                           ds.bounds.right,
-                           ds.bounds.top)
-            self.resolution = ds.res
+            values = np.stack([ds.read()], axis=0)
+            crs = ds.crs
+            transform = ds.transform
+            bounds = (ds.bounds.left,
+                      ds.bounds.bottom,
+                      ds.bounds.right,
+                      ds.bounds.top)
+            resolution = ds.res
             ds.close()
+            variables = None
+            band_idx_labels = None
+            dim_names = None
 
         elif isinstance(ds, (xr.DataArray, xr.Dataset)):
             if isinstance(ds, xr.Dataset):
-                self.variables = list(ds.data_vars)
-                self.values = np.stack([ds[var] for var in self.variables], axis=0)
+                variables = list(ds.data_vars)
+                values = np.stack([ds[var] for var in list(ds.data_vars)], axis=0)
+                vdim_list = [ds[v].dims for v in list(ds.data_vars)]
+                dim_names = vdim_list[0]
+                if not all(element == dim_names for element in vdim_list):
+                    raise ValueError("The dimensions of data variables in the dataset are not all the same. "
+                                     "Datasets with multiple variables are only allowed if all variable dimensions "
+                                     "are equal.")
+                dim_names = list(dim_names)
             elif isinstance(ds, xr.DataArray):
-                self.variables = ds.name
-                self.values = np.stack([ds.values], axis=0)
+                variables = ds.name
+                values = np.stack([ds.values], axis=0)
+                dim_names = list(ds.dims)
             else:
                 raise ValueError("Datatype not recognized, check input file or object.")
-            self.crs = ds.rio.crs
-            self.transform = ds.rio.transform()
-            self.bounds = ds.rio.bounds()
-            self.resolution = ds.rio.resolution()
-            self.dim_names = self._get_xarray_dim_names(ds)
-            self.band_idx_labels = ds[self.dim_names[0]].values
+            crs = ds.rio.crs
+            transform = ds.rio.transform()
+            bounds = ds.rio.bounds()
+            resolution = ds.rio.resolution()
+            band_idx_labels = ds[dim_names[0]].values
         else:
             raise ValueError("The input is not recognized as a file path, rasterio DatasetReader, or xarray object.")
 
-    def _get_xarray_dim_names(self, ds):
-        dimnames = []
-        for x in self.values[0,:,:,:].shape:
-            dimname = next((name for name, size in dict(ds.sizes).items() if size == x), None)
-            dimnames.append(dimname)
+        return RasterClass(data=values,
+                           crs=crs,
+                           transform=transform,
+                           bounds=bounds,
+                           resolution=resolution,
+                           var_names=variables,
+                           band_labels=band_idx_labels,
+                           dim_names=dim_names)
 
-        return dimnames
 
-
-def vectorize_grid(dataset):
-    """
-    Function to create a vectorized grid from a raster dataset where each pixel is a polygon.
+def vectorize_grid(dataset: Union[str, Path, rio.DatasetReader, xr.DataArray, xr.Dataset, RasterClass]
+                   ) -> gpd.GeoDataFrame:
+    """Creates vectorized representation of raster dataset grid.
 
     Args:
-        dataset (str | pathlib.Path | rasterio.DatasetReader | xarray.DataArray | xarray.Dataset) : An input gridded
-            dataset, can be multidimensional.
+        dataset:
+            An input gridded dataset, can be multidimensional.
 
     Returns:
-        geopandas.GeoDataFrame : Polygons representing the raster grid cells.
+         Polygons representing the raster grid cells.
     """
-    raster = RasterClass(dataset)
+    if isinstance(dataset, RasterClass):
+        raster = dataset
+    else:
+        raster = RasterClass.load(dataset)
 
     # get grid resolution
     xres, yres = raster.resolution
@@ -153,40 +248,17 @@ def vectorize_grid(dataset):
     return grid_polys
 
 
-def jitter_geometries(pnt_gdframe, tolerance=0.1):
-    """
-    Function that applies "jitter" or random noise to geometries in a Geopandas GeoDataFrame.
+def find_intersections(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Function to find any intersecting geometries in a GeoDataFrame.
 
     Args:
-        pnt_gdframe(geopandas.GeoDataFrame): A GeoDataFrame with valid geometry column.
-        tolerance(float): The spread of the random noise added (interpreted as the standard-deviation).
+        gdf: Input GeoDataFrame with valid geometries.
 
     Returns:
-        geopandas.GeoDataFrame: GeoDataFrame with "jittered" geometries
-    """
-    gdf = pnt_gdframe
-
-    gdf.loc[:,'geometry'] = gdf['geometry'].apply(lambda point: translate(
-        point,
-        np.random.normal(0, tolerance / 2),
-        np.random.normal(0, tolerance / 2)
-    ))
-
-    return gdf
-
-
-def find_intersections(gdf: gpd.GeoDataFrame):
-    """
-    Function to find any intersecting geometries in a GeoDataFrame.
-
-    Args:
-        gdf(geopandas.GeoDataFrame): Input GeoDataFrame to assess intersections.
-
-    Returns:
-        geopandas.GeoDataFrame: Output GeoDataFrame
+        A new GeoDataFrame of the intersecting geometries from the input GeoDataFrame.
     """
     # Save geometries to another field
-    gdf.loc[:,'geom'] = gdf.geometry
+    gdf.loc[:, 'geom'] = gdf.geometry
 
     # Self join
     sj = gpd.sjoin(gdf, gdf,

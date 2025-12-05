@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="GRIDtools" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="GRIDtools" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="gridtools" project-jdk-type="Python SDK" />
 </project>

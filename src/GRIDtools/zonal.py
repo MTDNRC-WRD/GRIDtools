@@ -1,42 +1,55 @@
-## Zonal operations on gridded data using a geometry
-# CNB968 - Todd Blythe
+"""Zonal operations on gridded data using a geometry
+
+The zonal module has some commonly used operations in Hydrologic Science (or Earth Science) including
+zonal statistics, where raster (gridded) data are associated with particular geometries based on selected
+summary statistics.
+
+This module contains the following functions:
+- calc_zonal_stats()
+- grid_area_weighted_volume()
+- sample_raster_points()
+
+-  **Author(s):** Todd Blythe, MTDNRC, CNB968
+-  **Date:** Created 12/1/2025
+"""
+import warnings
+from pathlib import Path
+from typing import Union, Optional
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import xarray as xr
-from pathlib import Path
+from rasterio import DatasetReader
 from rasterio.features import rasterize
 from rasterio.enums import MergeAlg
 from rasterio.transform import rowcol
 from shapely.geometry import Polygon
-import warnings
 
 from GRIDtools.utils import vectorize_grid, RasterClass
 
 
-def calc_zonal_stats(in_geom,
-                     in_grid,
-                     method='groupby',
-                     stats='mean',
-                     all_touched=False,
-                     output='pandas',
-                     **kwargs):
-    """
+def calc_zonal_stats(in_geom: Union[str, Path, gpd.GeoDataFrame],
+                     in_grid: Union[str, Path, DatasetReader, xr.DataArray, xr.Dataset, RasterClass],
+                     method: str = 'groupby',
+                     stats: Union[str, list] = 'mean',
+                     all_touched: bool = False,
+                     output: str = 'pandas',
+                     **kwargs) -> Union[pd.DataFrame, xr.Dataset]:
+    """Calculates zonal statistics for a set of geometries based input raster data.
+
     Uses various methods to calculate zonal statistics for set of geometries. This method rasterizes the geometries
-    to calculate zonal statistics.
+    first to calculate zonal statistics. Two methods are available, one requires the additional dependency rasterstats
+    package. The default method uses pandas groupby and is compatible with multidimensional (multiband) datsets.
 
     Args:
-        in_geom (str | pathlib.Path | geopandas.GeoDataFrame):
+        in_geom:
             input file path or GeoDataFrame of geometries to summarize.
-
-        in_grid (str | pathlib.Path | rasterio.DatasetReader | xarray.DataArray | xarray.Dataset):
+        in_grid:
             the input gridded dataset to summarize over the input geometries.
-
-        method (str): optional
+        method:
             'groupby' or 'rasterstats' the default is 'groupby'
-
-        stats (str | list): optional
+        stats:
             The name of the statistic to use for zonal stats, or list of valid statistics - default 'mean.'
             These differ based on the method argument.
             If method == 'rasterstats' then options are any string accepted by that package. See accepted statistics
@@ -46,34 +59,37 @@ def calc_zonal_stats(in_geom,
             descriptive stats. Not all functions may be represented by a string name but their series method can be
             used in the stats argument (e.g., stats=['mean', 'count', pd.Series.mode] where pd.Series.mode returns the
             majority value within the geometry.
-
-        all_touched (bool): optional
+        all_touched:
             whether to include all cells intersected by each geometry (True) or only those with center points within
             each geometry (False) - default is False
-
-        output (str): optional
+        output:
             Specifies what type to return, either 'pandas' for pandas.DataFrame or 'xarray' for xarray.Dataset.
             This is ignored if method == 'rasterstats' which will always output a pandas dataframe.
-
         **kwargs:
             additional key word arguments accepted by rasterstats package
 
     Returns:
-        pandas.DataFrame | xarray.Dataset:
             A multiindex/dimensional DataFrame or dataset with the summary statistics for
-            each input geometry and all raster bands/dimensions
+            each input geometry and all raster bands/dimensions as data variables or columns
+
+    Raises:
+        ValueError: If stats argument is not a string or list
+        ValueError: If 'output' argument is neither 'pandas' nor 'xarray'
+        ValueError: If 'method' argument is not one of ['groupby', 'rasterstats']
+
     """
     # get geometry in same reference system
     if isinstance(in_geom, (str, Path)):
         in_geom = gpd.read_file(in_geom)
 
     geom = in_geom
-    raster = RasterClass(in_grid)
+    if isinstance(in_grid, RasterClass):
+        raster = in_grid
+    else:
+        raster = RasterClass.load(in_grid)
 
     # check crs
-    if geom.crs.to_authority() == raster.crs.to_authority():
-        pass
-    else:
+    if geom.crs.to_authority() != raster.crs.to_authority():
         geom = geom.to_crs(raster.crs)
 
     #TODO - add checks for valid stats
@@ -85,41 +101,44 @@ def calc_zonal_stats(in_geom,
         raise ValueError("stats argument must be either valid string or list of accepted methods")
 
     if method == 'rasterstats':
-        from rasterstats import zonal_stats
+        try:
+            from rasterstats import zonal_stats
+        except ImportError as e:
+            print(f"The rasterstats package is required for method 'rasterstats' but is not installed: {e}")
 
         if kwargs.get('layer') is not None:
             layer = kwargs.get('layer')
         else:
-            layer=0
+            layer = 0
 
         if kwargs.get('band') is not None:
             band = kwargs.get('band')
         else:
-            band=1
+            band = 1
 
         if kwargs.get('categorical') is not None:
-            categorical=kwargs.get('categorical')
+            categorical = kwargs.get('categorical')
         else:
-            categorical=False
+            categorical = False
 
         if kwargs.get('raster_out') is not None:
-            raster_out=kwargs.get('raster_out')
+            raster_out = kwargs.get('raster_out')
         else:
-            raster_out=False
+            raster_out = False
 
         if kwargs.get('geojson_out') is not None:
-            geojson_out=kwargs.get('geojson_out')
+            geojson_out = kwargs.get('geojson_out')
         else:
-            geojson_out=False
+            geojson_out = False
 
         if kwargs.get('boundless') is not None:
-            boundless=kwargs.get('boundless')
+            boundless = kwargs.get('boundless')
         else:
-            boundless=True
+            boundless = True
 
         # Need to add loop to deal with multiple bands
         zs = zonal_stats(geom.geometry,
-                         raster.values[0,0,:,:],
+                         raster.values[0, 0, :, :],
                          affine=raster.transform,
                          stats=stats,
                          all_touched=all_touched,
@@ -149,10 +168,10 @@ def calc_zonal_stats(in_geom,
             df_dict = {'FID': np.tile(adj_rzd.ravel(), band_idx.size), band_name: band_idx.repeat(adj_rzd.ravel().size)}
 
             if isinstance(var_names, str):
-                df_dict[var_names] = in_raster_values[0,:,:,:].ravel()
+                df_dict[var_names] = in_raster_values[0, :, :, :].ravel()
             else:
                 for i in range(len(var_names)):
-                    df_dict[var_names[i]] = in_raster_values[i,:,:,:].ravel()
+                    df_dict[var_names[i]] = in_raster_values[i, :, :, :].ravel()
 
             rstrzd_df = pd.DataFrame(
                 df_dict
@@ -201,8 +220,8 @@ def calc_zonal_stats(in_geom,
             warnings.warn(
                 " ".join(
                     [
-                        f"Not all geometries were returned, {len(geom.index) - len(n_rstrzed[1:])} geometries were missed during rasterize.",
-                        "Attempting to rasterize missed geometries..."
+                        f"Not all geometries were returned, {len(geom.index) - len(n_rstrzed[1:])} "
+                        f"geometries were missed during rasterize. Attempting to rasterize missed geometries...",
                     ]
                 ),
                 UserWarning,
@@ -249,7 +268,7 @@ def calc_zonal_stats(in_geom,
             warnings.warn(
                 " ".join(
                     [
-                        f"Point locations failed to capture all geometries,",
+                        f"Point locations failed to capture all geometries, ",
                         "{len(geom.index) - len(result_df.index.get_level_values(0).unique())} unrepresented geometries",
                         "will be skipped..."
                     ]
@@ -273,22 +292,56 @@ def calc_zonal_stats(in_geom,
     return fgd
 
 
-def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, data_scale=1):
+def grid_area_weighted_volume(dataset: Union[str, Path, DatasetReader, xr.DataArray, xr.Dataset, RasterClass],
+                              in_geom: gpd.GeoDataFrame,
+                              geom_id_col: Optional[str],
+                              data_scale: float = 1.0) -> xr.Dataset:
+    """Function to calculate are weighted volume for a geometry from overlapping gridded data.
+
+    In hydrologic or climate sciences, it is common to have depth valued data (e.g., precipitation)
+    that needs to be summarized as a volume for a non-uniform area (e.g., a watershed). This function calculates
+    the percent of overlap between the underlying area geometry and the gridded dataset grid so that the sum of all
+    overlapping grid cells are weighted by their individual overlap. This ensures that the cumulative sum of
+    all the averlapping cells is not skewed by grid cells with high or low depth values that only intersect
+    a small portion of the underlying area geometry.
+
+    Args:
+        dataset:
+            Raster, or multiband/multidimensional dataset containing one depth valued data variables (if multiple
+            data variables exist in the dataset volumes for only the first variable will be returned).
+        in_geom:
+            A Geopandas GeoDataFrame with a geometry or geometries to calculate the weighted volume over.
+
+            As of this version, this must be in the same coordinate reference system as the 'dataset' argument. Only
+            polygons are accepted.
+        geom_id_col:
+            An optional string of a column name found in the GeoDataFrame that will be used to index the geometry data
+            for the output, this could be a name or location identifier. If None, an integer index will be assigned
+            by default.
+        data_scale:
+            A scaling value to convert the depth valued input data. Default is 1.0, meaning no scaling occurs.
+
+            For example, precipitation data in millimeters, passing a data_scale value of 1000.0 would convert the
+            precipitation values to meters.
+
+    Returns:
+        An xarray Dataset containing the volume calculated for the data variable in the input dataset. The Dataset
+        will also contain coordinate variables for the index/names of each geometry and their area.
+
+    Raises:
+        ValueError: If input geometries are not polygons.
+        IndexError: if the geom_id_col argument is not found in the input geometry column names
     """
-    Takes a multidimensional (.nc) DataArray and input polygon geometry in the same coordinate reference
-    system and returns an area weighted volume for depth valued variables (e.g., precip).
-    :param dataset: xarray.DataArray - must have defined spatial_ref and be in units of meters,
-    time dimension/coords must be labeled 'time'
-    :param in_geom: a GeoDataFrame of input shapefile/geometry in the same spatial_ref as xarray data
-    :param out_fp: str - path to save shapefile if save_shp_to_file=True
-    :param save_shp_to_file: boolean, default = False, if True will save the grid shapefile to the out filepath
-    :return: xarray.Dataset - contains timeseries of area weighted volume for each input geometry.
-    """
+
     if (in_geom.geom_type != 'Polygon').any():
         raise ValueError("The input geometry(s) are not all type Polygon. Only Polygons are supported.")
 
-    rast = RasterClass(dataset)
-    grid_polys = vectorize_grid(dataset)
+    if isinstance(dataset, RasterClass):
+        rast = dataset
+    else:
+        rast = RasterClass.load(dataset)
+
+    grid_polys = vectorize_grid(rast)
     grid_polys.index.name = 'GridID'
     nrows = rast.values.shape[2]
     ncols = rast.values.shape[3]
@@ -308,7 +361,7 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, data_scale=1):
         elif geom_id_col in in_geom.columns.to_list():
             clpd['FeatureID'] = in_geom.loc[r][geom_id_col]
         else:
-            raise ValueError("Argument for geom_id_col not found in input geometry columns.")
+            raise IndexError("Argument for geom_id_col not found in input geometry columns.")
 
         clips.append(clpd)
 
@@ -317,6 +370,8 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, data_scale=1):
     clipped_grid_shp.index.name = 'GridID'
 
     # Loop through unique feature ID's calculate the weighted volume for each
+    # TODO: this currently just does the first data variable for a multidimensional dataset, need to make this
+    #   work for all variables in the RasterClass
     vol_series = []
     for gid in in_geom[geom_id_col].to_list():
         qarea = pd.DataFrame(
@@ -326,7 +381,7 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, data_scale=1):
         allcells = pd.concat([qarea, grd_proj], axis=1)
         allcells.sort_index(inplace=True)
         area_arry = allcells['CellArea_sqm'].values.reshape(nrows, ncols)
-        md_arry = rast.values[0,:,:,:] / data_scale
+        md_arry = rast.values[0, :, :, :] / data_scale
         vol_grd = area_arry * md_arry
         vol_v = np.nansum(vol_grd, axis=(1, 2))
         vol_v = vol_v.reshape(vol_v.size, 1)
@@ -354,41 +409,46 @@ def grid_area_weighted_volume(dataset, in_geom, geom_id_col=None, data_scale=1):
 
     return agg_dset
 
+# TODO: add a method selection here that allows for an xarray dataset/array to use the nearest selection method as it
+#   seems to be more performant
+def sample_raster_points(xcoords: Union[list, np.ndarray],
+                         ycoords: Union[list, np.ndarray],
+                         in_grid: Union[str, Path, DatasetReader, xr.DataArray, xr.Dataset, RasterClass],
+                         pnt_index: Optional[Union[list, np.ndarray]],
+                         output: str = 'pandas_long') -> Union[pd.DataFrame, xr.Dataset]:
+    """Samples raster data at point locations.
 
-def sample_raster_points(xcoords, ycoords, in_grid, pnt_index=None, output='pandas_long'):
-    """
     Function takes a list of x and y coordinates and returns a dataframe or dataset of values sampled from a raster
     input dataset.This function returns values across all dimensions of a multidimensional raster. This function does
     not check for matching coordinate reference systems so points must be in the same CRS as the input raster.
 
     Args:
-        xcoords(list | numpy.ndarray):
-            list or 1D-array of x coordinates.
-
-        ycoords(list | numpy.ndarray):
-            list or 1D-array of y coordinates.
-
-        in_grid(str | Path | RasterClass | rasterio.DatasetReader | xarray.DataArray | xarray.Dataset):
-            The input gridded dataset to sample from.
-
-        pnt_index(list | numpy.ndarray): optional
+        xcoords:
+            list or 1D-array of x coordinate values.
+        ycoords:
+            list or 1D-array of y coordinate values.
+        in_grid:
+            The input gridded dataset to sample from, either a raster or multidimensional/multiband dataset.
+        pnt_index: optional
             An input list or 1D-array of index labels to override the default incremental index.
-
-        output(str): optional
+        output: optional
             The type of output to return as a string:
                 - 'pandas_long' is a long-form dataframe returned (default)
                 - 'pandas_multi' is a multiindex dataframe
-                - 'xarray' returns an xarray dataset
+                - 'xarray' returns a xarray dataset
 
     Returns:
-        pandas.DataFrame | xarray.Dataset:
-            Returns a Dataframe or Dataset of the raster values at the input coordinate locations, indexed by
-            the input index.
+        The raster values at the input coordinate locations, indexed by an incremental integer or the pnt_index
+        argument.
+
+    Raises:
+        ValueError: If the pnt_index argument is not a list or numpy array
+        ValueError: If the output argument is not one of ['pandas_long', 'pandas_multi', 'xarray']
     """
     if isinstance(in_grid, RasterClass):
         raster = in_grid
     else:
-        raster = RasterClass(in_grid)
+        raster = RasterClass.load(in_grid)
 
     bands = raster.values.shape[1]
     if raster.band_idx_labels is None:
@@ -434,4 +494,5 @@ def sample_raster_points(xcoords, ycoords, in_grid, pnt_index=None, output='pand
         out = out.to_xarray()
         return out
     else:
-        raise ValueError("The output argument is not recognized. Please choose 'pandas_long', 'pandas_multi', or 'xarray.'")
+        raise ValueError("The output argument is not recognized. Please choose 'pandas_long', "
+                         "'pandas_multi', or 'xarray.'")

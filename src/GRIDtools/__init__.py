@@ -1,2 +1,6 @@
 from .zonal import *
-from .watershed import *
+from .utils import (
+    RasterClass,
+    vectorize_grid,
+    find_intersections
+)
