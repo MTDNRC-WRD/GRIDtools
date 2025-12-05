@@ -1,7 +1,14 @@
 # GRIDtools
  Suite of commonly used functions and utilities for working with gridded data.
 
-# Installation
-For stable version 0.1.0
+## Installation
+### Current Main Branch
+pip install https://github.com/MTDNRC-WRD/GRIDtools/archive/refs/heads/main.zip
+### Specific Version
+pip install https://https://github.com/MTDNRC-WRD/GRIDtools/archive/refs/tags/*version_number*.zip
 
-pip install git+https://github.com/MTDNRC-WRD/GRIDtools@main
+Insert the version number you want to download for example v0.2.0
+### Development (editable) Install
+fork and clone the repo
+
+pip install -e //path/to/clone/GRIDtools
