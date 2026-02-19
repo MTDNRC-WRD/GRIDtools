@@ -320,8 +320,8 @@ def calc_zonal_stats(in_geom: Union[str, Path, gpd.GeoDataFrame],
             fgd = fgd.to_dataframe()
         elif output == 'xarray':
             pass
-else:
-     raise ValueError("The output argument is not recognized, choose between 'pandas or 'xarray.'")
+        else:
+            raise ValueError("The output argument is not recognized, choose between 'pandas or 'xarray.'")
     else:
         raise ValueError("The method argument is not recognized, please choose 'rasterstats', 'groupby' or 'exactextract'.")
     # return GeoDataFrame with stats added as additional attributes
