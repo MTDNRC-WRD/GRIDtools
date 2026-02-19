@@ -15,7 +15,6 @@ This module contains the following functions:
 import warnings
 from pathlib import Path
 from typing import Union, Optional
-
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -25,7 +24,6 @@ from rasterio.features import rasterize
 from rasterio.enums import MergeAlg
 from rasterio.transform import rowcol
 from shapely.geometry import Polygon
-
 from GRIDtools.utils import vectorize_grid, RasterClass
 
 
@@ -48,7 +46,7 @@ def calc_zonal_stats(in_geom: Union[str, Path, gpd.GeoDataFrame],
         in_grid:
             the input gridded dataset to summarize over the input geometries.
         method:
-            'groupby' or 'rasterstats' the default is 'groupby'
+            'groupby' or 'rasterstats' or 'exactextract' the default is 'groupby'
         stats:
             The name of the statistic to use for zonal stats, or list of valid statistics - default 'mean.'
             These differ based on the method argument.
@@ -59,6 +57,10 @@ def calc_zonal_stats(in_geom: Union[str, Path, gpd.GeoDataFrame],
             descriptive stats. Not all functions may be represented by a string name but their series method can be
             used in the stats argument (e.g., stats=['mean', 'count', pd.Series.mode] where pd.Series.mode returns the
             majority value within the geometry.
+
+            If method == 'exactextract', then options are any string accepted by that package. See accepted statistics
+            strings here: https://pypi.org/project/exactextract/0.2.0.dev199/
+
         all_touched:
             whether to include all cells intersected by each geometry (True) or only those with center points within
             each geometry (False) - default is False
@@ -75,7 +77,7 @@ def calc_zonal_stats(in_geom: Union[str, Path, gpd.GeoDataFrame],
     Raises:
         ValueError: If stats argument is not a string or list
         ValueError: If 'output' argument is neither 'pandas' nor 'xarray'
-        ValueError: If 'method' argument is not one of ['groupby', 'rasterstats']
+        ValueError: If 'method' argument is not one of ['groupby', 'rasterstats', 'exactextract']
 
     """
     # get geometry in same reference system
@@ -286,8 +288,42 @@ def calc_zonal_stats(in_geom: Union[str, Path, gpd.GeoDataFrame],
         else:
             raise ValueError("The output argument is not recognized, choose between 'pandas or 'xarray.'")
 
+    elif method == 'exactextract':
+        if isinstance(stats[0], str):
+            pass
+        else:
+            raise ValueError("stats argument must be valid string when using 'exactextract'.")
+
+        if isinstance(raster.variables, str):
+            raster.variables = [raster.variables]
+
+        y_coords = np.linspace(raster.bounds[3] + (raster.transform.e / 2), raster.bounds[1] - (raster.transform.e / 2), raster.values.shape[2])
+        x_coords = np.linspace(raster.bounds[0] + (raster.transform.a / 2), raster.bounds[2] - (raster.transform.a / 2), raster.values.shape[3])
+
+        xda_list = []
+        for i in range(0, len(raster.variables)):
+            xda = xr.DataArray(
+                raster.values[i, :, :, :],
+                coords={'time': raster.band_idx_labels, 'y': y_coords, 'x': x_coords},
+                dims=('time', 'y', 'x'),
+                name=raster.variables[i])
+            xda_list.append(xda)
+        grid_xds = xr.merge(xda_list)
+        grid_xds.rio.write_crs(raster.crs, inplace=True)
+
+        grid_xds = grid_xds.rio.reproject(5071)
+        geom = geom.to_crs(5071)
+
+        fgd = grid_xds.xvec.zonal_stats(geometry=geom.geometry, x_coords="x", y_coords="y", stats=stats, method="exactextract")
+
+        if output == 'pandas':
+            fgd = fgd.to_dataframe()
+        elif output == 'xarray':
+            pass
+else:
+     raise ValueError("The output argument is not recognized, choose between 'pandas or 'xarray.'")
     else:
-        raise ValueError("The method argument is not recognized, please choose 'rasterstats' or 'groupby.'")
+        raise ValueError("The method argument is not recognized, please choose 'rasterstats', 'groupby' or 'exactextract'.")
     # return GeoDataFrame with stats added as additional attributes
     return fgd
 
